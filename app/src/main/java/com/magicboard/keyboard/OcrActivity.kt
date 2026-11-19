@@ -2,17 +2,14 @@ package com.magicboard.keyboard
 
 import android.Manifest
 import android.app.Activity
-import android.app.PictureInPictureParams
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.content.res.Configuration
 import android.media.projection.MediaProjectionManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.text.TextUtils
-import android.util.Rational
+import android.provider.Settings
 import android.view.Gravity
-import android.view.View
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
@@ -20,13 +17,9 @@ import android.widget.ScrollView
 import android.widget.TextView
 
 class OcrActivity : Activity() {
-    private lateinit var title: TextView
     private lateinit var status: TextView
-    private lateinit var message: TextView
-    private lateinit var controls: LinearLayout
     private lateinit var start: Button
     private lateinit var stop: Button
-    private lateinit var pip: Button
     private var launchPending = false
     private val update: (OcrPreview.State) -> Unit = { state ->
         launchPending = false
@@ -36,73 +29,64 @@ class OcrActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        val scroll = ScrollView(this).apply {
-            setBackgroundColor(Ui.background)
-            isFillViewport = true
-        }
+        val scroll = ScrollView(this).apply { setBackgroundColor(Ui.background) }
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             Ui.pad(this, 18)
         }
         scroll.addView(column)
-        title = Ui.text(this, "Распознавание чата", 26f).apply {
+        column.addView(Ui.text(this, "OCR поверх чата", 26f).apply {
             Ui.bold(this)
             gravity = Gravity.START
-        }
-        column.addView(title)
-        controls = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        column.addView(controls)
-        controls.addView(Ui.text(
+        })
+        column.addView(Ui.text(
             this,
-            "Выберите окно чата в системном диалоге. Кадры обрабатываются на устройстве во время сеанса. Для чтения сообщений MB2 нужна общая секретная фраза.",
+            "Разрешите показ поверх приложений и подтвердите захват. Если Android предложит выбор, выберите полноэкранное окно чата. Чтобы остановить захват, нажмите «Стоп OCR» на клавиатуре.",
             15f
         ).apply { gravity = Gravity.START })
+
+        fun button(label: String, onClick: () -> Unit) = Button(this).apply {
+            text = label
+            isAllCaps = false
+            setTextColor(Ui.dark)
+            background = Ui.keyBackground(context, Ui.special, 12)
+            setOnClickListener { onClick() }
+            column.addView(this, LinearLayout.LayoutParams(-1, Ui.dp(context, 48)).apply {
+                topMargin = Ui.dp(context, 8)
+            })
+        }
         start = button("Начать захват", ::authorizeCapture)
-        pip = button("Показать в мини-окне") { enterPreview() }
-        stop = button("Завершить сеанс") { finishCapture() }
+        stop = button("Завершить сеанс") { stopService(Intent(this, OcrCaptureService::class.java)) }
+        button("Вернуться") { finish() }
         status = Ui.text(this, "", 14f).apply { gravity = Gravity.START }
         column.addView(status)
-        message = Ui.text(this, "", 18f).apply {
-            gravity = Gravity.START
-            background = Ui.rounded(Ui.key, 12, context)
-            Ui.pad(this, 12)
-            isSaveEnabled = false
-            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-        }
-        column.addView(message)
         setContentView(scroll)
         Ui.applyInsets(scroll)
         OcrPreview.observe(update)
     }
 
-    private fun button(label: String, onClick: () -> Unit) = Button(this).apply {
-        text = label
-        isAllCaps = false
-        setTextColor(Ui.dark)
-        background = Ui.keyBackground(context, Ui.special, 12)
-        setOnClickListener { onClick() }
-        controls.addView(this, LinearLayout.LayoutParams(-1, Ui.dp(context, 48)).apply {
-            topMargin = Ui.dp(context, 8)
-        })
+    override fun onResume() {
+        super.onResume()
+        render(OcrPreview.state)
     }
 
     private fun render(state: OcrPreview.State) {
-        val mini = isInPictureInPictureMode
-        title.visibility = if (mini) View.GONE else View.VISIBLE
-        controls.visibility = if (mini) View.GONE else View.VISIBLE
+        start.text = if (Settings.canDrawOverlays(this)) "Начать захват" else "Разрешить показ поверх чата"
         start.isEnabled = !state.active && !launchPending
-        stop.isEnabled = state.active || launchPending
-        pip.visibility = if (supportsPreview()) View.VISIBLE else View.GONE
-        pip.isEnabled = state.active
+        stop.isEnabled = state.active
         status.text = if (launchPending) "Запускаю распознавание…" else state.status
-        status.visibility = if (mini && state.plaintext.isNotEmpty()) View.GONE else View.VISIBLE
-        message.text = state.plaintext
-        message.maxLines = if (mini) 5 else Int.MAX_VALUE
-        message.ellipsize = if (mini) TextUtils.TruncateAt.END else null
-        message.visibility = if (state.plaintext.isEmpty()) View.GONE else View.VISIBLE
     }
 
     private fun authorizeCapture() {
+        if (!Settings.canDrawOverlays(this)) {
+            val settings = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
+            try {
+                startActivity(settings)
+            } catch (_: android.content.ActivityNotFoundException) {
+                status.text = "На этом устройстве недоступно разрешение показа поверх приложений."
+            }
+            return
+        }
         if (!AppSettings.hasSecret(this)) {
             status.text = "Сначала сохраните общую фразу в настройках magicboard."
             return
@@ -146,34 +130,8 @@ class OcrActivity : Activity() {
         }
     }
 
-    private fun finishCapture() {
-        stopService(Intent(this, OcrCaptureService::class.java))
-        launchPending = false
-        render(OcrPreview.State(status = "Сеанс завершён"))
-    }
-
-    private fun supportsPreview() =
-        packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
-
-    private fun enterPreview() {
-        if (!OcrPreview.state.active || isInPictureInPictureMode || !supportsPreview()) return
-        val params = PictureInPictureParams.Builder().setAspectRatio(Rational(16, 9)).build()
-        runCatching { enterPictureInPictureMode(params) }
-    }
-
-    override fun onUserLeaveHint() {
-        super.onUserLeaveHint()
-        enterPreview()
-    }
-
-    override fun onPictureInPictureModeChanged(mini: Boolean, config: Configuration) {
-        super.onPictureInPictureModeChanged(mini, config)
-        render(OcrPreview.state)
-    }
-
     override fun onDestroy() {
         OcrPreview.remove(update)
-        if (isFinishing) finishCapture()
         super.onDestroy()
     }
 

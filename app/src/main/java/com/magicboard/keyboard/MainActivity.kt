@@ -74,6 +74,11 @@ class MainActivity : Activity() {
             isChecked = AppSettings.autoCorrect(this@MainActivity)
             setOnCheckedChangeListener { _, value -> AppSettings.setAutoCorrect(this@MainActivity, value) }
         })
+        col.addView(CheckBox(this).apply {
+            text = "Виброотклик клавиш"
+            isChecked = AppSettings.hapticFeedback(this@MainActivity)
+            setOnCheckedChangeListener { _, value -> AppSettings.setHapticFeedback(this@MainActivity, value) }
+        })
         text("2. Общая секретная фраза", 20f, true)
         text("Используйте одну и ту же фразу минимум из 12 символов на обоих телефонах. Без неё расшифровать сообщения нельзя. Фраза хранится в зашифрованном виде через Android Keystore.", 14f)
         val phrase = EditText(this).apply {
@@ -117,11 +122,11 @@ class MainActivity : Activity() {
         button("Открыть шифротекст вручную") {
             startActivity(Intent(this, DecryptActivity::class.java))
         }
-        button("Распознавать сообщения в окне чата") {
+        button("Настроить OCR поверх чата") {
             startActivity(Intent(this, OcrActivity::class.java))
         }
         text("Как пользоваться", 20f, true)
-        text("В режиме «Буфер» наберите сообщение и нажмите «Вставить для OCR» или «Вставить ENC1». Затем отправьте шифротекст кнопкой чата. Live обновляет ENC1 в пустом поле с задержкой. Перед отправкой дождитесь статуса готовности.", 14f)
+        text("В чате выберите вкладку «OCR», чтобы видеть расшифровку поверх сообщений и вставлять шифротекст MB2. Вкладка «Буфер» подходит для отправки ENC1. Live обновляет ENC1 в пустом поле с задержкой.", 14f)
         setContentView(scroll)
         Ui.applyInsets(scroll)
     }

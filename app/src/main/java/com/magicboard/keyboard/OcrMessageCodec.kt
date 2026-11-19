@@ -22,7 +22,11 @@ internal object OcrMessageCodec {
     private val field = GenericGF(0x25, 32, 1)
     private val marker = Regex("(?<![0-9A-Z])M[B8][2Z]\\s*[:;]", RegexOption.IGNORE_CASE)
 
-    data class Row(val id: String, val index: Int, val total: Int, val data: String)
+    data class Row(val id: String, val index: Int, val total: Int, val data: String) {
+        val messageKey get() = id to total
+    }
+    data class Match(val row: Row, val range: IntRange)
+    data class Packet(val token: String, val rows: List<Row>)
 
     fun encrypt(message: String, phrase: String): String {
         require(message.toByteArray(Charsets.UTF_8).size <= MAX_PLAINTEXT_BYTES)
@@ -40,7 +44,7 @@ internal object OcrMessageCodec {
         }.joinToString("\n")
     }
 
-    fun scan(text: CharSequence): List<Row> {
+    fun scan(text: CharSequence): List<Match> {
         val bounded = text.take(24_000)
         val starts = marker.findAll(bounded).take(256).toList()
         if (starts.isEmpty()) return emptyList()
@@ -49,12 +53,14 @@ internal object OcrMessageCodec {
             val end = starts.getOrNull(index + 1)?.range?.first ?: bounded.length
             val symbols = IntArray(ROW_SYMBOLS)
             var count = 0
+            var lastSymbol = 0
             for (offset in (markerMatch.range.last + 1) until end) {
                 val char = bounded[offset]
                 if (char.isWhitespace()) continue
                 val symbol = symbolFor(char)
                 if (symbol < 0) break
                 symbols[count++] = symbol
+                lastSymbol = offset
                 if (count == ROW_SYMBOLS) break
             }
             if (count != ROW_SYMBOLS) return@mapIndexedNotNull null
@@ -67,7 +73,7 @@ internal object OcrMessageCodec {
             val rowIndex = readPair(data, 4)
             val total = readPair(data, 6)
             if (total !in 1..MAX_ROWS || rowIndex >= total) return@mapIndexedNotNull null
-            Row(data.take(4), rowIndex, total, data.substring(8))
+            Match(Row(data.take(4), rowIndex, total, data.substring(8)), markerMatch.range.first..lastSymbol)
         }
     }
 
@@ -95,16 +101,19 @@ internal object OcrMessageCodec {
         private val pending = LinkedHashMap<Pair<String, Int>, MutableMap<Int, Row>>()
         private val emitted = LinkedHashSet<String>()
 
-        fun accept(text: CharSequence): List<String> {
-            val complete = ArrayList<String>()
-            for (row in scan(text)) {
-                val key = row.id to row.total
+        fun accept(text: CharSequence): List<String> = acceptRows(scan(text).map { it.row }).map { it.token }
+
+        fun acceptRows(rows: List<Row>): List<Packet> {
+            val complete = ArrayList<Packet>()
+            for (row in rows) {
+                val key = row.messageKey
                 val parts = pending.getOrPut(key) { linkedMapOf() }
                 parts[row.index] = row
                 if (parts.size != row.total) continue
-                val token = assemble(parts.values.toList()) ?: continue
+                val ordered = parts.values.sortedBy { it.index }
+                val token = assemble(ordered) ?: continue
                 pending.remove(key)
-                if (emitted.add(token)) complete.add(token)
+                if (emitted.add(token)) complete.add(Packet(token, ordered))
             }
             while (pending.size > 12) pending.remove(pending.keys.first())
             while (emitted.size > 64) emitted.remove(emitted.first())

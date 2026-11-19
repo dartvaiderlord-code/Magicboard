@@ -29,6 +29,9 @@ object AppSettings {
     fun autoCorrect(c: Context): Boolean = prefs(c).getBoolean("auto_correct", true)
     fun setAutoCorrect(c: Context, enabled: Boolean) =
         prefs(c).edit().putBoolean("auto_correct", enabled).apply()
+    fun hapticFeedback(c: Context): Boolean = prefs(c).getBoolean("haptic_feedback", true)
+    fun setHapticFeedback(c: Context, enabled: Boolean) =
+        prefs(c).edit().putBoolean("haptic_feedback", enabled).apply()
 
     fun saveSecret(c: Context, phrase: String) {
         require(phrase.length >= 12)

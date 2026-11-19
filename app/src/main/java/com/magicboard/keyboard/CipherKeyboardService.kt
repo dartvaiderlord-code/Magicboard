@@ -1,6 +1,7 @@
 package com.magicboard.keyboard
 
 import android.graphics.Color
+import android.graphics.drawable.InsetDrawable
 import android.icu.text.BreakIterator
 import android.inputmethodservice.InputMethodService
 import android.content.Intent
@@ -10,8 +11,10 @@ import android.os.Looper
 import android.text.InputType
 import android.text.TextUtils
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
 import android.view.View
+import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
@@ -22,7 +25,7 @@ import java.util.concurrent.Executors
 
 /** Standalone IME: no third-party keyboard SDK or network capability. */
 class CipherKeyboardService : InputMethodService() {
-    private enum class Mode { NORMAL, BUFFER, LIVE }
+    private enum class Mode { NORMAL, BUFFER, OCR, LIVE }
     private var mode = Mode.NORMAL
     private var lang = "ru"
     private var upper = false
@@ -51,10 +54,19 @@ class CipherKeyboardService : InputMethodService() {
     private var preview: TextView? = null
     private var actionRow: LinearLayout? = null
     private var tip: TextView? = null
+    private var preferOcr = false
+    private var capturing = false
+    private val captureStatus: (OcrPreview.State) -> Unit = { state ->
+        if (capturing != state.active) {
+            capturing = state.active
+            if (mode == Mode.OCR) updateUi()
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
         lang = AppSettings.language(this)
+        OcrPreview.observe(captureStatus)
     }
 
     override fun onEvaluateFullscreenMode(): Boolean = false
@@ -84,7 +96,20 @@ class CipherKeyboardService : InputMethodService() {
         selectionStart = attribute?.initialSelStart ?: -1
         selectionEnd = attribute?.initialSelEnd ?: -1
         selectionRevision++
+        restoreOcrMode()
         if (base != null) render()
+    }
+
+    override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
+        super.onStartInputView(info, restarting)
+        if (restoreOcrMode()) render()
+    }
+
+    private fun restoreOcrMode(): Boolean {
+        if (mode != Mode.NORMAL || passwordField || numberField || (!preferOcr && !capturing)) return false
+        mode = Mode.OCR
+        updateSecureFlag()
+        return true
     }
 
     override fun onCreateInputView(): View {
@@ -93,6 +118,18 @@ class CipherKeyboardService : InputMethodService() {
             layoutDirection = View.LAYOUT_DIRECTION_LTR
             setBackgroundColor(Ui.background)
             setPadding(Ui.dp(context, 3), Ui.dp(context, 3), Ui.dp(context, 3), Ui.dp(context, 7))
+            if (Build.VERSION.SDK_INT >= 30) {
+                setOnApplyWindowInsetsListener { view, insets ->
+                    val navigation = insets.getInsets(WindowInsets.Type.navigationBars())
+                    view.setPadding(
+                        Ui.dp(context, 3) + navigation.left,
+                        Ui.dp(context, 3),
+                        Ui.dp(context, 3) + navigation.right,
+                        Ui.dp(context, 7) + navigation.bottom
+                    )
+                    insets
+                }
+            }
         }
         render()
         return base!!
@@ -146,6 +183,7 @@ class CipherKeyboardService : InputMethodService() {
     }
 
     override fun onDestroy() {
+        OcrPreview.remove(captureStatus)
         resetPrivateInput()
         handler.removeCallbacksAndMessages(null)
         worker.shutdownNow()
@@ -159,13 +197,13 @@ class CipherKeyboardService : InputMethodService() {
         root.removeAllViews()
         val tabs = row(root, 38)
         val modes = if (passwordField || numberField) listOf(Mode.NORMAL to "Обычный") else
-            listOf(Mode.NORMAL to "Обычный", Mode.BUFFER to "🔒 Буфер", Mode.LIVE to "⚡ Live")
+            listOf(Mode.NORMAL to "Обычный", Mode.BUFFER to "Буфер", Mode.OCR to "OCR", Mode.LIVE to "Live")
         modes.forEach { (m, label) ->
             val tv = Ui.text(this, label, 13f, if (mode == m) Color.WHITE else Ui.dark).apply {
                 if (mode == m) Ui.bold(this)
                 background = Ui.keyBackground(context, if (mode == m) Ui.accent else Ui.background, 16)
                 isSelected = mode == m
-                setOnClickListener { changeMode(m) }
+                setOnClickListener { keyFeedback(it); changeMode(m) }
             }
             tabs.addView(tv, LinearLayout.LayoutParams(0, -1, 1f).apply {
                 leftMargin = Ui.dp(this@CipherKeyboardService, 3)
@@ -209,7 +247,10 @@ class CipherKeyboardService : InputMethodService() {
 
     private fun key(row: LinearLayout, value: String, width: Float = 1f, special: Boolean = false, action: () -> Unit) {
         val tv = Ui.text(this, value, if (value.length > 4) 14f else 20f).apply {
-            background = Ui.keyBackground(context, if (special) Ui.special else Ui.key)
+            background = InsetDrawable(
+                Ui.keyBackground(context, if (special) Ui.special else Ui.key),
+                Ui.dp(context, 2), Ui.dp(context, 3), Ui.dp(context, 2), Ui.dp(context, 3)
+            )
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
             contentDescription = when (value) {
@@ -222,18 +263,17 @@ class CipherKeyboardService : InputMethodService() {
                 "Русский", "English", "Пробел" -> if (row === suggestions) "Сменить язык" else "Пробел, $value"
                 else -> null
             }
-            setOnClickListener { action() }
+            setOnClickListener { keyFeedback(it); action() }
             isClickable = true
         }
-        row.addView(tv, LinearLayout.LayoutParams(0, -1, width).apply {
-            leftMargin = Ui.dp(this@CipherKeyboardService, 2)
-            rightMargin = Ui.dp(this@CipherKeyboardService, 2)
-            topMargin = Ui.dp(this@CipherKeyboardService, 3)
-            bottomMargin = Ui.dp(this@CipherKeyboardService, 3)
-        })
+        row.addView(tv, LinearLayout.LayoutParams(0, -1, width))
     }
 
-    private fun row(root: LinearLayout, height: Int = 47): LinearLayout = LinearLayout(this).apply {
+    private fun keyFeedback(view: View) {
+        if (AppSettings.hapticFeedback(this)) view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+    }
+
+    private fun row(root: LinearLayout, height: Int = 51): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         val landscape = resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
         root.addView(this, LinearLayout.LayoutParams(-1, Ui.dp(this@CipherKeyboardService, if (landscape) height * 3 / 4 else height)))
@@ -317,6 +357,7 @@ class CipherKeyboardService : InputMethodService() {
         }
         resetPrivateInput()
         mode = newMode
+        preferOcr = newMode == Mode.OCR
         symbols = false
         emojis = false
         updateSecureFlag()
@@ -398,11 +439,12 @@ class CipherKeyboardService : InputMethodService() {
         tip?.text = when (mode) {
             Mode.NORMAL -> ""
             Mode.BUFFER -> "Текст хранится в клавиатуре до вставки"
+            Mode.OCR -> if (capturing) "OCR активен · защищённый ввод MB2" else "Защищённый ввод MB2 · захват выключен"
             Mode.LIVE -> liveStatus.ifEmpty { "Live: наберите сообщение в пустом поле" }
         }
         preview?.text = when (mode) {
             Mode.NORMAL -> ""
-            Mode.BUFFER, Mode.LIVE -> if (buffer.isEmpty()) "Введите сообщение…" else buffer.takeLast(160).toString()
+            Mode.BUFFER, Mode.OCR, Mode.LIVE -> if (buffer.isEmpty()) "Введите сообщение…" else buffer.takeLast(160).toString()
         }
         val bar = suggestions ?: return
         bar.removeAllViews()
@@ -433,6 +475,15 @@ class CipherKeyboardService : InputMethodService() {
                 key(controls, "Очистить", 1f, true) { clearBuffer(); updateUi() }
                 key(controls, if (bufferBusy) "Шифрование…" else "Вставить ENC1", 1.6f, true) { encryptBuffer() }
                 key(controls, "Вставить для OCR", 1.9f, true) { encryptBuffer(forOcr = true) }
+            }
+            Mode.OCR -> {
+                key(controls, if (capturing) "Стоп OCR" else "Начать OCR", 1.35f, true) {
+                    if (capturing) stopService(Intent(this, OcrCaptureService::class.java))
+                    else startActivity(Intent(this, OcrActivity::class.java)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                }
+                key(controls, "Очистить", 1.15f, true) { clearBuffer(); updateUi() }
+                key(controls, if (bufferBusy) "Шифрование…" else "Вставить MB2", 1.5f, true) { encryptBuffer(forOcr = true) }
             }
             Mode.LIVE -> {
                 key(controls, "Очистить", 1f, true) { clearBuffer(); scheduleLive(); updateUi() }
@@ -490,7 +541,8 @@ class CipherKeyboardService : InputMethodService() {
     }
 
     private fun encryptBuffer(forOcr: Boolean = false) {
-        if (mode != Mode.BUFFER || bufferBusy || buffer.isEmpty()) return
+        val draftMode = mode
+        if ((draftMode != Mode.BUFFER && draftMode != Mode.OCR) || bufferBusy || buffer.isEmpty()) return
         val ic = currentInputConnection ?: return
         val text = buffer.toString()
         if (forOcr && text.toByteArray(Charsets.UTF_8).size > OcrMessageCodec.MAX_PLAINTEXT_BYTES) {
@@ -511,7 +563,7 @@ class CipherKeyboardService : InputMethodService() {
             }
             handler.post {
                 bufferBusy = false
-                if (mode != Mode.BUFFER || draft != bufferRevision || currentInputConnection !== ic) {
+                if (mode != draftMode || draft != bufferRevision || currentInputConnection !== ic) {
                     updateUi(); return@post
                 }
                 when {

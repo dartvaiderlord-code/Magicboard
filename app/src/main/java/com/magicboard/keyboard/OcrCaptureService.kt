@@ -13,6 +13,7 @@ import android.content.pm.ServiceInfo
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
@@ -22,6 +23,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.provider.Settings
 import android.view.WindowManager
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
@@ -35,8 +37,7 @@ import kotlin.math.roundToInt
 internal object OcrPreview {
     data class State(
         val active: Boolean = false,
-        val status: String = "Сеанс не запущен",
-        val plaintext: String = ""
+        val status: String = "Сеанс не запущен"
     )
 
     private val listeners = mutableSetOf<(State) -> Unit>()
@@ -59,9 +60,21 @@ internal object OcrPreview {
 }
 
 class OcrCaptureService : Service() {
+    private data class ScanFrame(
+        val bitmap: Bitmap, val visual: OcrFrameSignature,
+        val screenWidth: Int, val screenHeight: Int, val geometry: Int
+    )
+    private data class VerifiedMessage(val rows: List<OcrMessageCodec.Row>, val plaintext: String)
+    private data class Placement(
+        val key: Pair<String, Int>, var lastRow: Int, val bounds: Rect,
+        var lastBounds: Rect, val text: String
+    )
+
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
     private val collector = OcrMessageCodec.Collector()
+    private val verified = LinkedHashMap<Pair<String, Int>, VerifiedMessage>()
+    private val overlay by lazy { OcrOverlay(this) }
     private var collectorKey = -1
     private var projection: MediaProjection? = null
     private var display: VirtualDisplay? = null
@@ -71,6 +84,16 @@ class OcrCaptureService : Service() {
     private var analyzing = false
     private var stoppedMessage = "Сеанс завершён"
     private var nextScan = 0L
+    private var nextComparison = 0L
+    private var geometryRevision = 0
+    private var captureWidth = 0
+    private var captureHeight = 0
+    private var latestVisual: OcrFrameSignature? = null
+    private var pendingFrame: ScanFrame? = null
+    private var coveredVisual: OcrFrameSignature? = null
+    private var coveredKey = -1
+    private val refreshOverlay = Runnable { clearOverlay() }
+    private val startScan = Runnable { scanPendingFrame() }
     private var screenReceiverRegistered = false
     private val screenOff = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -85,6 +108,14 @@ class OcrCaptureService : Service() {
         override fun onCapturedContentResize(width: Int, height: Int) {
             if (running) runCatching { attachReader(width, height) }
                 .onFailure { stopCapture("Не удалось изменить размер захвата") }
+        }
+
+        override fun onCapturedContentVisibilityChanged(isVisible: Boolean) {
+            if (!isVisible) {
+                geometryRevision++
+                clearOverlay()
+                discardPendingFrame()
+            }
         }
     }
 
@@ -108,6 +139,10 @@ class OcrCaptureService : Service() {
             stopCapture()
             return START_NOT_STICKY
         }
+        if (!Settings.canDrawOverlays(this)) {
+            stopCapture("Разрешите показ поверх других приложений")
+            return START_NOT_STICKY
+        }
 
         try {
             val notification = captureNotification()
@@ -129,7 +164,7 @@ class OcrCaptureService : Service() {
             }
             screenReceiverRegistered = true
             running = true
-            OcrPreview.publish(OcrPreview.State(true, "Ищу сообщения MB2 в выбранном окне…"))
+            OcrPreview.publish(OcrPreview.State(true, "OCR включён · ищу сообщения MB2"))
         } catch (_: Exception) {
             stopCapture("Не удалось начать захват. Запустите новый сеанс")
         }
@@ -152,7 +187,13 @@ class OcrCaptureService : Service() {
         val scale = minOf(1f, 1920f / max(width, height))
         val w = (width * scale).roundToInt().coerceAtLeast(1)
         val h = (height * scale).roundToInt().coerceAtLeast(1)
-        if (reader?.width == w && reader?.height == h) return
+        if (reader?.width == w && reader?.height == h && captureWidth == width && captureHeight == height) return
+        clearOverlay()
+        discardPendingFrame()
+        captureWidth = width
+        captureHeight = height
+        geometryRevision++
+        latestVisual = null
         val density = resources.displayMetrics.densityDpi
         val incoming = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2)
         try {
@@ -185,60 +226,168 @@ class OcrCaptureService : Service() {
     private fun onFrame(source: ImageReader) {
         if (source !== reader) return
         val image = source.acquireLatestImage() ?: return
-        val engine = recognizer
         val elapsed = SystemClock.elapsedRealtime()
-        val bitmap = image.use {
-            if (!running || analyzing || engine == null || elapsed < nextScan) return
+        val (width, height) = screenSize()
+        val frame = image.use {
+            if (!running) return
+            if (captureWidth != width || captureHeight != height) {
+                clearOverlay()
+                discardPendingFrame()
+                val message = "Откройте чат на весь экран или выберите захват всего экрана"
+                if (OcrPreview.state.status != message) OcrPreview.publish(OcrPreview.State(true, message))
+                return
+            }
+            val covered = coveredVisual
+            if (covered != null) {
+                if (elapsed < nextComparison) return
+                val signature = OcrFrameSignature(image, width, height)
+                latestVisual = signature
+                nextComparison = elapsed + 150
+                if (!Settings.canDrawOverlays(this) ||
+                        coveredKey != AppSettings.secretRevision(this) ||
+                        !covered.matches(signature, overlay.covered)) {
+                    clearOverlay()
+                }
+                return
+            }
+            val original = OcrFrameSignature(image, width, height)
+            val previous = latestVisual
+            latestVisual = original
+            if ((analyzing || elapsed < nextScan) && previous?.matches(original) == true) return
             val plane = image.planes[0]
             val paddedWidth = plane.rowStride / plane.pixelStride
             val padded = Bitmap.createBitmap(paddedWidth, source.height, Bitmap.Config.ARGB_8888)
             padded.copyPixelsFromBuffer(plane.buffer)
-            if (paddedWidth == source.width) padded else
+            val bitmap = if (paddedWidth == source.width) padded else
                 Bitmap.createBitmap(padded, 0, 0, source.width, source.height).also { padded.recycle() }
+            ScanFrame(bitmap, original, width, height, geometryRevision)
         }
+        pendingFrame?.bitmap?.recycle()
+        pendingFrame = frame
+        scanPendingFrame()
+    }
+
+    private fun scanPendingFrame() {
+        if (analyzing || !running || coveredVisual != null) return
+        val engine = recognizer ?: return
+        val frame = pendingFrame ?: return
+        val elapsed = SystemClock.elapsedRealtime()
+        if (elapsed < nextScan) {
+            main.removeCallbacks(startScan)
+            main.postDelayed(startScan, nextScan - elapsed)
+            return
+        }
+        pendingFrame = null
         analyzing = true
-        nextScan = elapsed + 850
+        val frameWidth = frame.bitmap.width
+        val frameHeight = frame.bitmap.height
+        val width = frame.screenWidth
+        val height = frame.screenHeight
+        nextScan = elapsed + 650
         try {
-            engine!!.process(InputImage.fromBitmap(bitmap, 0)).addOnCompleteListener { task ->
-                bitmap.recycle()
+            engine.process(InputImage.fromBitmap(frame.bitmap, 0)).addOnCompleteListener { task ->
+                frame.bitmap.recycle()
                 if (!running) return@addOnCompleteListener
                 if (!task.isSuccessful) {
                     analyzing = false
                     stopCapture("Не удалось запустить локальное распознавание")
                     return@addOnCompleteListener
                 }
-                val recognized = task.result.text
+                val recognized = task.result
                 val key = AppSettings.secretRevision(this)
-                worker.execute { decryptFrame(recognized, key) }
+                worker.execute {
+                    val positions = positionedRows(recognized)
+                    val placements = decryptPositions(positions, key).map { message ->
+                        val r = message.bounds
+                        OverlayMessage(Rect(
+                            (r.left * width.toFloat() / frameWidth).roundToInt(),
+                            (r.top * height.toFloat() / frameHeight).roundToInt(),
+                            (r.right * width.toFloat() / frameWidth).roundToInt(),
+                            (r.bottom * height.toFloat() / frameHeight).roundToInt()
+                        ), message.plaintext)
+                    }
+                    main.post {
+                        analyzing = false
+                        val latest = latestVisual
+                        if (running && frame.geometry == geometryRevision && key == AppSettings.secretRevision(this) &&
+                            latest != null) {
+                            val stable = placements.filter {
+                                frame.visual.matches(latest, region = it.bounds)
+                            }
+                            present(stable, latest, width, height, key)
+                        }
+                        scanPendingFrame()
+                    }
+                }
             }
         } catch (_: Exception) {
-            bitmap.recycle()
+            frame.bitmap.recycle()
             stopCapture("Не удалось обработать кадр")
         }
     }
 
-    private fun decryptFrame(text: String, key: Int) {
-        val keyChanged = collectorKey != key
-        if (keyChanged) {
+    private fun decryptPositions(rows: List<PositionedRow>, key: Int): List<OverlayMessage> {
+        if (collectorKey != key) {
             collector.clear()
+            verified.clear()
             collectorKey = key
         }
-        val tokens = collector.accept(text).takeLast(3)
-        val phrase = if (tokens.isEmpty()) null else AppSettings.loadSecret(this)
-        val messages = if (phrase == null) emptyList() else tokens.mapNotNull {
-            runCatching { CryptoEngine.decrypt(it, phrase) }.getOrNull()?.take(500)
-        }
-        main.post {
-            analyzing = false
-            if (!running || key != AppSettings.secretRevision(this)) return@post
-            val state = OcrPreview.state
-            when {
-                messages.isNotEmpty() -> OcrPreview.publish(OcrPreview.State(true, "Сообщение прочитано", messages.joinToString("\n\n")))
-                tokens.isNotEmpty() -> OcrPreview.publish(OcrPreview.State(true, "Проверьте общую секретную фразу"))
-                keyChanged && state.plaintext.isNotEmpty() ->
-                    OcrPreview.publish(OcrPreview.State(true, "Ищу сообщения MB2 в выбранном окне…"))
+        val packets = collector.acceptRows(rows.map { it.row })
+        val phrase = if (packets.isEmpty()) null else AppSettings.loadSecret(this)
+        if (phrase != null) {
+            for (packet in packets) {
+                val plaintext = runCatching { CryptoEngine.decrypt(packet.token, phrase) }.getOrNull()
+                if (plaintext != null) verified[packet.rows.first().messageKey] = VerifiedMessage(packet.rows, plaintext)
             }
         }
+        while (verified.size > 64) verified.remove(verified.keys.first())
+
+        val placements = mutableListOf<Placement>()
+        for ((row, bounds) in rows.sortedBy { it.bounds.top }) {
+            val message = verified[row.messageKey] ?: continue
+            if (message.rows.getOrNull(row.index) != row) continue
+            val last = placements.lastOrNull()
+            if (last != null && last.key == row.messageKey && row.index > last.lastRow &&
+                bounds.top - last.lastBounds.bottom <= last.lastBounds.height() * 2 &&
+                bounds.right > last.lastBounds.left && bounds.left < last.lastBounds.right) {
+                last.bounds.union(bounds)
+                last.lastRow = row.index
+                last.lastBounds = bounds
+            } else {
+                placements.add(Placement(row.messageKey, row.index, Rect(bounds), bounds, message.plaintext))
+            }
+        }
+        return placements.map { OverlayMessage(it.bounds, it.text) }
+    }
+
+    private fun present(messages: List<OverlayMessage>, visual: OcrFrameSignature, width: Int, height: Int, key: Int) {
+        if (messages.isEmpty()) return
+        if (!overlay.show(messages, width, height)) {
+            stopCapture("Android отозвал разрешение показа поверх других приложений")
+            return
+        }
+        if (overlay.covered.isNotEmpty()) {
+            discardPendingFrame()
+            coveredVisual = visual
+            coveredKey = key
+            main.removeCallbacks(refreshOverlay)
+            main.postDelayed(refreshOverlay, 12_000)
+            OcrPreview.publish(OcrPreview.State(true, "OCR включён · сообщения распознаны"))
+        }
+    }
+
+    private fun clearOverlay() {
+        main.removeCallbacks(refreshOverlay)
+        if (coveredVisual != null) overlay.clear()
+        coveredVisual = null
+        latestVisual = null
+        nextScan = 0
+    }
+
+    private fun discardPendingFrame() {
+        main.removeCallbacks(startScan)
+        pendingFrame?.bitmap?.recycle()
+        pendingFrame = null
     }
 
     private fun captureNotification(): Notification {
@@ -264,12 +413,16 @@ class OcrCaptureService : Service() {
     private fun stopCapture(message: String = "Сеанс завершён") {
         stoppedMessage = message
         running = false
+        clearOverlay()
+        discardPendingFrame()
         OcrPreview.publish(OcrPreview.State(status = message))
         stopSelf()
     }
 
     override fun onDestroy() {
         running = false
+        clearOverlay()
+        discardPendingFrame()
         if (screenReceiverRegistered) unregisterReceiver(screenOff)
         display?.release()
         reader?.close()

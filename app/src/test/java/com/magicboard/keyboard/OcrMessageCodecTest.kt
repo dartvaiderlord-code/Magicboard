@@ -9,6 +9,15 @@ import org.junit.Test
 class OcrMessageCodecTest {
     private val phrase = "magicboard test phrase 42"
 
+    @Test fun locatesWrappedRowsWithoutIncludingAdjacentChatText() {
+        val row = OcrMessageCodec.encrypt("Test overlay", phrase).lineSequence().first()
+        val wrapped = row.take(18) + "\n" + row.drop(18)
+        val screen = "Alice\n$wrapped   13:25\nBob"
+        val match = OcrMessageCodec.scan(screen).single()
+        assertEquals(wrapped, screen.substring(match.range))
+        assertEquals(0, match.row.index)
+    }
+
     @Test fun correctsFourSubstitutionsPerRowWithWrapping() {
         val clear = "Привет 🌍\nHello, OCR!"
         val text = OcrMessageCodec.encrypt(clear, phrase).lines().joinToString("\n") { row ->
