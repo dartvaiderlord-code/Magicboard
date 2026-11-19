@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">magicboard</string>
+    <string name="accessibility_name">magicboard — показ расшифровки</string>
+    <string name="decrypt_action">Расшифровать в magicboard</string>
+    <string name="invalid_token">Нужен полный шифротекст в формате ENC1.</string>
+    <string name="accessibility_description">При включении служба читает видимый текст экранных элементов только в выбранных мессенджерах, ищет сообщения ENC1 и показывает локальную расшифровку поверх них. Не отправляет данные в интернет. Может видеть чувствительное содержимое экрана; включайте только при необходимости.</string>
+</resources>
