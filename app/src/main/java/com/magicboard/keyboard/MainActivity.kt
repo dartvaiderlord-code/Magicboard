@@ -78,9 +78,9 @@ class MainActivity : Activity() {
         text("Используйте одну и ту же фразу минимум из 12 символов на обоих телефонах. Без неё расшифровать сообщения нельзя. Фраза хранится в зашифрованном виде через Android Keystore.", 14f)
         val phrase = EditText(this).apply {
             hint = "Секретная фраза (12+ символов)"
+            isSingleLine = true
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
             imeOptions = EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING or EditorInfo.IME_ACTION_DONE
-            isSingleLine = true
             isSaveEnabled = false
             importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
             setPadding(Ui.dp(context, 12), Ui.dp(context, 12), Ui.dp(context, 12), Ui.dp(context, 12))
