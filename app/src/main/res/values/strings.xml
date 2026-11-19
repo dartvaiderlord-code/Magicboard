@@ -1,5 +1,5 @@
 <resources>
     <string name="app_name">magicboard</string>
     <string name="decrypt_action">Расшифровать в magicboard</string>
-    <string name="invalid_token">Нужен полный шифротекст в формате ENC1.</string>
+    <string name="invalid_token">Нужен один полный шифротекст в формате ENC1 или MB2.</string>
 </resources>

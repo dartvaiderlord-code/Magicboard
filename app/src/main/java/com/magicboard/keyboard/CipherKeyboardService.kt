@@ -431,7 +431,8 @@ class CipherKeyboardService : InputMethodService() {
             Mode.NORMAL -> Unit
             Mode.BUFFER -> {
                 key(controls, "Очистить", 1f, true) { clearBuffer(); updateUi() }
-                key(controls, if (bufferBusy) "Шифрование…" else "Зашифровать и вставить", 2.4f, true) { encryptBuffer() }
+                key(controls, if (bufferBusy) "Шифрование…" else "Вставить ENC1", 1.6f, true) { encryptBuffer() }
+                key(controls, "Вставить для OCR", 1.9f, true) { encryptBuffer(forOcr = true) }
             }
             Mode.LIVE -> {
                 key(controls, "Очистить", 1f, true) { clearBuffer(); scheduleLive(); updateUi() }
@@ -488,18 +489,26 @@ class CipherKeyboardService : InputMethodService() {
         }
     }
 
-    private fun encryptBuffer() {
+    private fun encryptBuffer(forOcr: Boolean = false) {
         if (mode != Mode.BUFFER || bufferBusy || buffer.isEmpty()) return
         val ic = currentInputConnection ?: return
+        val text = buffer.toString()
+        if (forOcr && text.toByteArray(Charsets.UTF_8).size > OcrMessageCodec.MAX_PLAINTEXT_BYTES) {
+            toast("Для OCR сократите сообщение до ${OcrMessageCodec.MAX_PLAINTEXT_BYTES} байт UTF-8")
+            return
+        }
         val draft = bufferRevision
         val selection = selectionRevision
         val key = AppSettings.secretRevision(this)
         bufferBusy = true
-        val text = buffer.toString()
         updateUi()
         worker.execute {
             val secret = AppSettings.loadSecret(this)
-            val result = secret?.let { runCatching { CryptoEngine.encrypt(text, it) } }
+            val result = secret?.let {
+                runCatching {
+                    if (forOcr) OcrMessageCodec.encrypt(text, it) else CryptoEngine.encrypt(text, it)
+                }
+            }
             handler.post {
                 bufferBusy = false
                 if (mode != Mode.BUFFER || draft != bufferRevision || currentInputConnection !== ic) {

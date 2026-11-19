@@ -13,7 +13,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import java.util.concurrent.Executors
 
-/** Local reader for a manually pasted, shared, or selected ENC1 message. */
+/** Local reader for a manually pasted, shared, or selected encrypted message. */
 class DecryptActivity : Activity() {
     private val worker = Executors.newSingleThreadExecutor()
     private var revision = 0
@@ -35,7 +35,7 @@ class DecryptActivity : Activity() {
         }
         column.addView(title)
         val token = EditText(this).apply {
-            hint = "Вставьте сообщение ENC1:"
+            hint = "Вставьте сообщение ENC1: или MB2:"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or
                 InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
             imeOptions = EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
@@ -67,22 +67,23 @@ class DecryptActivity : Activity() {
         }
         decrypt.setOnClickListener {
             val encoded = token.text.toString().trim()
-            if (!CryptoEngine.isToken(encoded)) {
-                output.setText(R.string.invalid_token)
-                return@setOnClickListener
-            }
             val request = ++revision
             val key = AppSettings.secretRevision(this)
             decrypt.isEnabled = false
             output.text = "Расшифровка…"
             worker.execute {
+                val encrypted = if (CryptoEngine.isToken(encoded)) encoded
+                    else OcrMessageCodec.Collector().accept(encoded).singleOrNull()
                 val passphrase = AppSettings.loadSecret(this)
-                val plaintext = passphrase?.let { runCatching { CryptoEngine.decrypt(encoded, it) }.getOrNull() }
+                val plaintext = if (encrypted != null && passphrase != null) {
+                    runCatching { CryptoEngine.decrypt(encrypted, passphrase) }.getOrNull()
+                } else null
                 runOnUiThread {
                     if (request != revision || isFinishing || isDestroyed) return@runOnUiThread
                     decrypt.isEnabled = true
                     output.text = when {
                         key != AppSettings.secretRevision(this) -> "Фраза изменилась. Повторите попытку."
+                        encrypted == null -> getString(R.string.invalid_token)
                         passphrase == null -> "Сначала сохраните общую фразу в настройках magicboard."
                         plaintext == null -> "Не удалось расшифровать. Проверьте фразу и целостность сообщения."
                         else -> plaintext
