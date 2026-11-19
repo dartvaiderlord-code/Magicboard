@@ -117,29 +117,6 @@ class MainActivity : Activity() {
         button("Открыть шифротекст вручную") {
             startActivity(Intent(this, DecryptActivity::class.java))
         }
-        text("3. Автоматическая расшифровка", 20f, true)
-        text("Выберите приложения, в которых разрешено искать только сообщения ENC1. Текст показывается поверх зашифрованного сообщения. Доступ к экрану — мощное разрешение Android: он потенциально позволяет читать другие видимые данные, хотя эта программа обрабатывает только ENC1 в выбранных приложениях.", 14f)
-        AppSettings.supportedApps.forEach { (pkg, label) ->
-            col.addView(CheckBox(this).apply {
-                text = label
-                isChecked = AppSettings.allows(this@MainActivity, pkg)
-                setOnCheckedChangeListener { _, value -> AppSettings.setAllowed(this@MainActivity, pkg, value) }
-            })
-        }
-        button("Включить авторасшифровку") {
-            AlertDialog.Builder(this)
-                .setTitle("Разрешение на чтение видимого текста")
-                .setMessage("Служба специальных возможностей получит технический доступ к содержимому видимого экрана. magicboard проверяет наличие ENC1 только в отмеченных мессенджерах, расшифровывает локально и накладывает текст поверх сообщения. Данные никуда не передаются, сеть не используется. Службу можно отключить в настройках Android или приложении. Разрешить?")
-                .setNegativeButton("Отмена", null)
-                .setPositiveButton("Разрешить") { _, _ ->
-                    AppSettings.setConsent(this, true)
-                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                }.show()
-        }
-        button("Отключить авторасшифровку") {
-            AppSettings.setConsent(this, false)
-            Toast.makeText(this, "Чтение отключено. Можно также выключить службу в настройках Android.", Toast.LENGTH_LONG).show()
-        }
         text("Как пользоваться", 20f, true)
         text("В режиме «Буфер» наберите сообщение и нажмите «Зашифровать и вставить». Затем отправьте шифротекст кнопкой чата. Экспериментальный Live обновляет шифротекст в пустом поле с задержкой. Перед отправкой дождитесь статуса готовности.", 14f)
         setContentView(scroll)

@@ -18,18 +18,9 @@ object CryptoEngine {
     private val random = SecureRandom()
     private val aad = "CipherBoard/ENC1".toByteArray(Charsets.UTF_8)
     private val tokenRegex = Regex("ENC1:[A-Za-z0-9_-]{59,}")
-    private val embeddedToken = Regex("(?<![A-Za-z0-9_-])ENC1:[A-Za-z0-9_-]{59,${MAX_TOKEN_LENGTH - PREFIX.length}}(?![A-Za-z0-9_-])")
 
     fun isToken(text: CharSequence): Boolean =
         text.length in 64..MAX_TOKEN_LENGTH && tokenRegex.matches(text)
-
-    fun visibleToken(text: CharSequence): String? {
-        if (text.length > MAX_TOKEN_LENGTH + 512) return null
-        val matches = embeddedToken.findAll(text).iterator()
-        if (!matches.hasNext()) return null
-        val match = matches.next().value
-        return if (matches.hasNext()) null else match
-    }
 
     fun encrypt(message: String, passphrase: String): String {
         require(passphrase.length >= 12) { "Нужен ключ минимум из 12 символов" }

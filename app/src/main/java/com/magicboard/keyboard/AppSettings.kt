@@ -16,20 +16,8 @@ object AppSettings {
     private const val PREF = "cipherboard_settings"
     private const val SECRET = "encrypted_phrase"
     private const val KEY_ALIAS = "cipherboard_local_secret_v1"
-    val supportedApps = linkedMapOf(
-        "org.telegram.messenger" to "Telegram",
-        "com.whatsapp" to "WhatsApp",
-        "org.thoughtcrime.securesms" to "Signal",
-        "com.discord" to "Discord"
-    )
-    fun prefs(c: Context): SharedPreferences = c.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+    private fun prefs(c: Context): SharedPreferences = c.getSharedPreferences(PREF, Context.MODE_PRIVATE)
 
-    fun consent(c: Context): Boolean = prefs(c).getBoolean("accessibility_consent", false)
-    fun setConsent(c: Context, allowed: Boolean) = prefs(c).edit().putBoolean("accessibility_consent", allowed).apply()
-    fun allows(c: Context, packageName: String): Boolean =
-        supportedApps.containsKey(packageName) && prefs(c).getBoolean("allow_$packageName", false)
-    fun setAllowed(c: Context, packageName: String, enabled: Boolean) =
-        prefs(c).edit().putBoolean("allow_$packageName", enabled).apply()
     fun language(c: Context): String = prefs(c).getString("language", "ru") ?: "ru"
     fun setLanguage(c: Context, lang: String) = prefs(c).edit().putString("language", lang).apply()
     fun hasSecret(c: Context): Boolean = prefs(c).contains(SECRET)
@@ -38,9 +26,6 @@ object AppSettings {
         .remove(SECRET)
         .putInt("secret_revision", secretRevision(c) + 1)
         .apply()
-    fun affectsDecryption(key: String?): Boolean =
-        key == null || key == SECRET || key == "secret_revision" ||
-            key == "accessibility_consent" || key.startsWith("allow_")
     fun autoCorrect(c: Context): Boolean = prefs(c).getBoolean("auto_correct", true)
     fun setAutoCorrect(c: Context, enabled: Boolean) =
         prefs(c).edit().putBoolean("auto_correct", enabled).apply()

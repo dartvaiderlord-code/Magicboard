@@ -2,7 +2,6 @@ package com.magicboard.keyboard
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -15,13 +14,6 @@ class CryptoEngineTest {
     @Test fun decryptsIndependentEnc1Vector() {
         val token = "ENC1:AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaG69cFxuCW1mv2Zcbaf89rPEDJIZgHefN_SHswho-LzVZGA"
         assertEquals("Привет 🌍", CryptoEngine.decrypt(token, phrase))
-    }
-
-    @Test fun findsOneVisibleTokenInMessengerMetadata() {
-        val token = CryptoEngine.encrypt("test", phrase)
-        assertEquals(token, CryptoEngine.visibleToken("Alice,\n$token\n12:03"))
-        assertNull(CryptoEngine.visibleToken("$token $token"))
-        assertNull(CryptoEngine.visibleToken("prefix$token"))
     }
 
     @Test fun acceptsMaximumLengthUnicodeMessage() {
