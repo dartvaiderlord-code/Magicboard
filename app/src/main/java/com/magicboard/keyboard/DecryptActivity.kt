@@ -72,18 +72,19 @@ class DecryptActivity : Activity() {
             decrypt.isEnabled = false
             output.text = "Расшифровка…"
             worker.execute {
-                val encrypted = if (CryptoEngine.isToken(encoded)) encoded
-                    else OcrMessageCodec.Collector().accept(encoded).singleOrNull()
-                val passphrase = AppSettings.loadSecret(this)
-                val plaintext = if (encrypted != null && passphrase != null) {
-                    runCatching { CryptoEngine.decrypt(encrypted, passphrase) }.getOrNull()
+                val enc1 = CryptoEngine.isToken(encoded)
+                val packet = if (enc1) null else OcrMessageCodec.Collector().acceptPackets(encoded).singleOrNull()
+                val valid = enc1 || packet != null
+                val passphrase = if (valid) AppSettings.loadSecret(this) else null
+                val plaintext = if (passphrase != null) {
+                    runCatching { packet?.decrypt(passphrase) ?: CryptoEngine.decrypt(encoded, passphrase) }.getOrNull()
                 } else null
                 runOnUiThread {
                     if (request != revision || isFinishing || isDestroyed) return@runOnUiThread
                     decrypt.isEnabled = true
                     output.text = when {
                         key != AppSettings.secretRevision(this) -> "Фраза изменилась. Повторите попытку."
-                        encrypted == null -> getString(R.string.invalid_token)
+                        !valid -> getString(R.string.invalid_token)
                         passphrase == null -> "Сначала сохраните общую фразу в настройках magicboard."
                         plaintext == null -> "Не удалось расшифровать. Проверьте фразу и целостность сообщения."
                         else -> plaintext

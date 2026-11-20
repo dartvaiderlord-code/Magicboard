@@ -336,7 +336,7 @@ class OcrCaptureService : Service() {
         val phrase = if (packets.isEmpty()) null else AppSettings.loadSecret(this)
         if (phrase != null) {
             for (packet in packets) {
-                val plaintext = runCatching { CryptoEngine.decrypt(packet.token, phrase) }.getOrNull()
+                val plaintext = runCatching { packet.decrypt(phrase) }.getOrNull()
                 if (plaintext != null) verified[packet.rows.first().messageKey] = VerifiedMessage(packet.rows, plaintext)
             }
         }

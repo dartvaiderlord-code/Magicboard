@@ -56,4 +56,23 @@ class OcrMessageCodecTest {
         assertEquals(max, CryptoEngine.decrypt(token, phrase))
         assertThrows(IllegalArgumentException::class.java) { OcrMessageCodec.encrypt(max + "!", phrase) }
     }
+
+    @Test fun extraCopiesRecoverMissingRowsWithoutEmittingMultipleMessages() {
+        val clear = "Я".repeat(250)
+        val copies = OcrMessageCodec.MAX_EXTRA_COPIES + 1
+        val lines = OcrMessageCodec.encrypt(clear, phrase, extraCopies = copies - 1).lines()
+        val rows = lines.size / copies
+        assertEquals(List(copies) { lines.take(rows) }.flatten(), lines)
+
+        val withMissingRows = lines.filterIndexed { index, _ -> index % rows % copies == index / rows }
+        val collector = OcrMessageCodec.Collector()
+        val packet = collector.acceptPackets(withMissingRows.joinToString("\n")).single()
+        assertEquals(clear, packet.decrypt(phrase))
+        assertEquals(clear, CryptoEngine.decrypt(packet.token, phrase))
+        assertTrue(collector.accept(lines.joinToString("\n")).isEmpty())
+        assertEquals(clear, OcrMessageCodec.Collector().acceptPackets(lines.joinToString("\n")).single().decrypt(phrase))
+        assertThrows(IllegalArgumentException::class.java) {
+            OcrMessageCodec.encrypt(clear, phrase, extraCopies = copies)
+        }
+    }
 }

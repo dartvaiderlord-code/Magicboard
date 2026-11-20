@@ -11,21 +11,23 @@ import android.os.Build
 internal data class KeyboardPalette(
     val surface: Int,
     val key: Int,
-    val outline: Int,
     val action: Int,
     val selected: Int,
     val text: Int,
     val secondaryText: Int,
     val selectedText: Int
 ) {
-    fun keyBackground(context: Context, color: Int, radius: Int, outlined: Boolean = false): RippleDrawable {
+    fun keyBackground(context: Context, color: Int, radius: Int): RippleDrawable {
         val fill = GradientDrawable().apply {
             setColor(color)
             cornerRadius = Ui.dp(context, radius).toFloat()
-            if (outlined) setStroke(Ui.dp(context, 1), outline)
         }
         val ripple = Color.argb(36, Color.red(text), Color.green(text), Color.blue(text))
-        return RippleDrawable(ColorStateList.valueOf(ripple), fill, null)
+        val mask = if (color == Color.TRANSPARENT) GradientDrawable().apply {
+            setColor(Color.WHITE)
+            cornerRadius = fill.cornerRadius
+        } else null
+        return RippleDrawable(ColorStateList.valueOf(ripple), fill, mask)
     }
 
     companion object {
@@ -37,7 +39,6 @@ internal data class KeyboardPalette(
                 return if (dark) KeyboardPalette(
                     tone(android.R.color.system_neutral2_900),
                     tone(android.R.color.system_neutral1_800),
-                    tone(android.R.color.system_neutral2_600),
                     tone(android.R.color.system_accent2_800),
                     tone(android.R.color.system_accent1_300),
                     tone(android.R.color.system_neutral1_50),
@@ -46,7 +47,6 @@ internal data class KeyboardPalette(
                 ) else KeyboardPalette(
                     tone(android.R.color.system_accent2_50),
                     tone(android.R.color.system_neutral1_10),
-                    tone(android.R.color.system_neutral2_200),
                     tone(android.R.color.system_accent2_100),
                     tone(android.R.color.system_accent1_200),
                     tone(android.R.color.system_neutral1_900),
@@ -55,10 +55,10 @@ internal data class KeyboardPalette(
                 )
             }
             return if (dark) KeyboardPalette(
-                0xFF262122.toInt(), 0xFF383134.toInt(), 0xFF514649.toInt(), 0xFF554047.toInt(),
+                0xFF262122.toInt(), 0xFF383134.toInt(), 0xFF554047.toInt(),
                 0xFFF3B6C4.toInt(), 0xFFFFEFF2.toInt(), 0xFFCEC0C4.toInt(), 0xFF3D242C.toInt()
             ) else KeyboardPalette(
-                0xFFF9EBE8.toInt(), 0xFFFFF7F5.toInt(), 0xFFE7D1CE.toInt(), 0xFFF6DAD5.toInt(),
+                0xFFF9EBE8.toInt(), 0xFFFFF7F5.toInt(), 0xFFF6DAD5.toInt(),
                 0xFFF7C9C2.toInt(), 0xFF302324.toInt(), 0xFF695051.toInt(), 0xFF3D2829.toInt()
             )
         }

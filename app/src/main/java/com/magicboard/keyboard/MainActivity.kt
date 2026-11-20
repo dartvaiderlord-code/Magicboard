@@ -18,7 +18,6 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import android.widget.Toast
 
 class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -44,12 +43,12 @@ class MainActivity : Activity() {
                 if (bold) Ui.bold(this)
                 col.addView(this)
             }
-        fun button(title: String, action: () -> Unit): Button = Button(this).apply {
+        fun button(title: String, action: (Button) -> Unit): Button = Button(this).apply {
             this.text = title
             isAllCaps = false
             setTextColor(Ui.dark)
             background = Ui.keyBackground(context, Ui.special, 13)
-            setOnClickListener { action() }
+            setOnClickListener { action(this) }
             col.addView(this, LinearLayout.LayoutParams(-1, Ui.dp(this@MainActivity, 52)).apply {
                 bottomMargin = Ui.dp(this@MainActivity, 8)
             })
@@ -79,6 +78,21 @@ class MainActivity : Activity() {
             isChecked = AppSettings.hapticFeedback(this@MainActivity)
             setOnCheckedChangeListener { _, value -> AppSettings.setHapticFeedback(this@MainActivity, value) }
         })
+        button("Повторы строк MB2: ${AppSettings.ocrExtraCopies(this)}") { setting ->
+            val choices = Array(OcrMessageCodec.MAX_EXTRA_COPIES + 1) { index ->
+                if (index == 0) "Без повторов" else "$index"
+            }
+            AlertDialog.Builder(this)
+                .setTitle("Дополнительные копии каждой строки")
+                .setSingleChoiceItems(choices, AppSettings.ocrExtraCopies(this)) { dialog, index ->
+                    AppSettings.setOcrExtraCopies(this, index)
+                    setting.text = "Повторы строк MB2: $index"
+                    dialog.dismiss()
+                }
+                .setNegativeButton("Отмена", null)
+                .show()
+        }
+        text("Каждая копия помогает OCR восстановить пропущенные строки и увеличивает длину сообщения. Действует в OCR и Live.", 13f)
         text("2. Общая секретная фраза", 20f, true)
         text("Используйте одну и ту же фразу минимум из 12 символов на обоих телефонах. Без неё расшифровать сообщения нельзя. Фраза хранится в зашифрованном виде через Android Keystore.", 14f)
         val phrase = EditText(this).apply {
@@ -94,15 +108,14 @@ class MainActivity : Activity() {
         val secretStatus = text(if (AppSettings.hasSecret(this)) "Ключ сохранён на устройстве" else "Ключ пока не задан", 13f)
         button("Сохранить фразу") {
             if (phrase.text.length < 12) {
-                Toast.makeText(this, "Введите не меньше 12 символов", Toast.LENGTH_LONG).show()
+                secretStatus.text = "Введите не меньше 12 символов"
             } else {
                 try {
                     AppSettings.saveSecret(this, phrase.text.toString())
                     phrase.text.clear()
                     secretStatus.text = "Ключ сохранён на устройстве"
-                    Toast.makeText(this, "Ключ сохранён", Toast.LENGTH_SHORT).show()
                 } catch (_: Exception) {
-                    Toast.makeText(this, "Ошибка сохранения ключа", Toast.LENGTH_LONG).show()
+                    secretStatus.text = "Ошибка сохранения ключа"
                 }
             }
         }
@@ -126,7 +139,7 @@ class MainActivity : Activity() {
             startActivity(Intent(this, OcrActivity::class.java))
         }
         text("Как пользоваться", 20f, true)
-        text("Откройте меню с четырьмя квадратами на клавиатуре. Режим «OCR» показывает расшифровку поверх сообщений и вставляет MB2. «Буфер» вставляет ENC1 по кнопке, а Live обновляет ENC1 в пустом поле по мере набора.", 14f)
+        text("Откройте меню с четырьмя квадратами на клавиатуре. Режим «OCR» показывает расшифровку поверх сообщений и вставляет MB2. «Буфер» вставляет ENC1 по кнопке, а Live обновляет MB2 в пустом поле по мере набора.", 14f)
         setContentView(scroll)
         Ui.applyInsets(scroll)
     }

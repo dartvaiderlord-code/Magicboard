@@ -15,7 +15,9 @@ import java.security.KeyStore
 object AppSettings {
     private const val PREF = "cipherboard_settings"
     private const val SECRET = "encrypted_phrase"
+    private const val OCR_EXTRA_COPIES = "ocr_extra_copies"
     private const val KEY_ALIAS = "cipherboard_local_secret_v1"
+    private val keyStore by lazy { KeyStore.getInstance("AndroidKeyStore").apply { load(null) } }
     private fun prefs(c: Context): SharedPreferences = c.getSharedPreferences(PREF, Context.MODE_PRIVATE)
 
     fun language(c: Context): String = prefs(c).getString("language", "ru") ?: "ru"
@@ -32,6 +34,10 @@ object AppSettings {
     fun hapticFeedback(c: Context): Boolean = prefs(c).getBoolean("haptic_feedback", true)
     fun setHapticFeedback(c: Context, enabled: Boolean) =
         prefs(c).edit().putBoolean("haptic_feedback", enabled).apply()
+    fun ocrExtraCopies(c: Context): Int =
+        prefs(c).getInt(OCR_EXTRA_COPIES, 0).coerceIn(0, OcrMessageCodec.MAX_EXTRA_COPIES)
+    fun setOcrExtraCopies(c: Context, count: Int) =
+        prefs(c).edit().putInt(OCR_EXTRA_COPIES, count.coerceIn(0, OcrMessageCodec.MAX_EXTRA_COPIES)).apply()
 
     fun saveSecret(c: Context, phrase: String) {
         require(phrase.length >= 12)
@@ -69,8 +75,7 @@ object AppSettings {
 
     @Synchronized
     private fun localKey(create: Boolean = true): SecretKey {
-        val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        (store.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return it }
+        (keyStore.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return it }
         check(create) { "No local key" }
         val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
         generator.init(

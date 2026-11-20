@@ -18,11 +18,17 @@ object CryptoEngine {
     private val random = SecureRandom()
     private val aad = "CipherBoard/ENC1".toByteArray(Charsets.UTF_8)
     private val tokenRegex = Regex("ENC1:[A-Za-z0-9_-]{59,}")
+    private val keyFactory = ThreadLocal.withInitial { SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256") }
 
     fun isToken(text: CharSequence): Boolean =
         text.length in 64..MAX_TOKEN_LENGTH && tokenRegex.matches(text)
 
-    fun encrypt(message: String, passphrase: String): String {
+    fun encrypt(message: String, passphrase: String): String = encodeToken(encryptPacket(message, passphrase))
+
+    internal fun encodeToken(packet: ByteArray): String =
+        PREFIX + Base64.getUrlEncoder().withoutPadding().encodeToString(packet)
+
+    internal fun encryptPacket(message: String, passphrase: String): ByteArray {
         require(passphrase.length >= 12) { "Нужен ключ минимум из 12 символов" }
         require(message.length <= MAX_MESSAGE_LENGTH) { "Сообщение слишком длинное" }
         val salt = ByteArray(16).also(random::nextBytes)
@@ -33,25 +39,26 @@ object CryptoEngine {
         cipher.updateAAD(aad)
         val plaintext = message.toByteArray(Charsets.UTF_8)
         return try {
-            val packed = salt + iv + cipher.doFinal(plaintext)
-            PREFIX + Base64.getUrlEncoder().withoutPadding().encodeToString(packed)
+            salt + iv + cipher.doFinal(plaintext)
         } finally {
             plaintext.fill(0)
         }
     }
 
     fun decrypt(token: String, passphrase: String): String {
-        require(passphrase.length >= 12) { "Ключ не установлен" }
         require(isToken(token)) { "Неверный формат" }
-        val packed = Base64.getUrlDecoder().decode(token.removePrefix(PREFIX))
+        return decryptPacket(Base64.getUrlDecoder().decode(token.removePrefix(PREFIX)), passphrase)
+    }
+
+    internal fun decryptPacket(packed: ByteArray, passphrase: String): String {
+        require(passphrase.length >= 12) { "Ключ не установлен" }
         require(packed.size >= 16 + 12 + 16) { "Повреждённое сообщение" }
         val salt = packed.copyOfRange(0, 16)
         val iv = packed.copyOfRange(16, 28)
-        val encrypted = packed.copyOfRange(28, packed.size)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.DECRYPT_MODE, deriveKey(passphrase, salt), GCMParameterSpec(128, iv))
         cipher.updateAAD(aad)
-        val plaintext = cipher.doFinal(encrypted)
+        val plaintext = cipher.doFinal(packed, 28, packed.size - 28)
         return try {
             String(plaintext, Charsets.UTF_8).also { require(it.length <= MAX_MESSAGE_LENGTH) }
         } finally {
@@ -63,7 +70,7 @@ object CryptoEngine {
         val password = passphrase.toCharArray()
         val spec = PBEKeySpec(password, salt, KDF_ROUNDS, 256)
         return try {
-            val key = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
+            val key = keyFactory.get()!!.generateSecret(spec).encoded
             try {
                 SecretKeySpec(key, "AES")
             } finally {

@@ -5,11 +5,11 @@ import com.google.zxing.common.reedsolomon.ReedSolomonDecoder
 import com.google.zxing.common.reedsolomon.ReedSolomonEncoder
 import com.google.zxing.common.reedsolomon.ReedSolomonException
 import java.security.MessageDigest
-import java.util.Base64
 
 /** A printed representation of the authenticated ENC1 bytes, with independently protected rows. */
 internal object OcrMessageCodec {
     const val MAX_PLAINTEXT_BYTES = 500
+    const val MAX_EXTRA_COPIES = 3
     private const val MAX_PACKET_BYTES = MAX_PLAINTEXT_BYTES + 44
     private const val MAX_ROWS = 64
     private const val ROW_SYMBOLS = 31
@@ -26,22 +26,31 @@ internal object OcrMessageCodec {
         val messageKey get() = id to total
     }
     data class Match(val row: Row, val range: IntRange)
-    data class Packet(val token: String, val rows: List<Row>)
+    class Packet(private val bytes: ByteArray, val rows: List<Row>) {
+        val token by lazy { CryptoEngine.encodeToken(bytes) }
+        fun decrypt(phrase: String): String = CryptoEngine.decryptPacket(bytes, phrase)
+    }
 
-    fun encrypt(message: String, phrase: String): String {
+    fun encrypt(message: String, phrase: String, extraCopies: Int = 0): String {
         require(message.toByteArray(Charsets.UTF_8).size <= MAX_PLAINTEXT_BYTES)
-        val packet = Base64.getUrlDecoder().decode(CryptoEngine.encrypt(message, phrase).removePrefix("ENC1:"))
+        require(extraCopies in 0..MAX_EXTRA_COPIES)
+        val packet = CryptoEngine.encryptPacket(message, phrase)
         val stream = encode32(byteArrayOf((packet.size shr 8).toByte(), packet.size.toByte()) + packet)
         val id = messageId(packet)
         val parts = stream.chunked(PAYLOAD_SYMBOLS)
         val encoder = ReedSolomonEncoder(field)
-        return parts.mapIndexed { index, part ->
+        val rows = parts.mapIndexed { index, part ->
             val data = id + pair(index) + pair(parts.size) + part.padEnd(PAYLOAD_SYMBOLS, '0')
             val codeword = IntArray(ROW_SYMBOLS)
             data.forEachIndexed { i, char -> codeword[i] = ALPHABET.indexOf(char) }
             encoder.encode(codeword, PARITY_SYMBOLS)
-            MARKER + codeword.joinToString("") { ALPHABET[it].toString() }
+            buildString(MARKER.length + ROW_SYMBOLS) {
+                append(MARKER)
+                codeword.forEach { append(ALPHABET[it]) }
+            }
         }.joinToString("\n")
+        // Spread the copies across the message so loss of a contiguous block can be recovered.
+        return List(extraCopies + 1) { rows }.joinToString("\n")
     }
 
     fun scan(text: CharSequence): List<Match> {
@@ -49,6 +58,7 @@ internal object OcrMessageCodec {
         val starts = marker.findAll(bounded).take(256).toList()
         if (starts.isEmpty()) return emptyList()
         val decoder = ReedSolomonDecoder(field)
+        val decoded = mutableMapOf<String, Row?>()
         return starts.mapIndexedNotNull { index, markerMatch ->
             val end = starts.getOrNull(index + 1)?.range?.first ?: bounded.length
             val symbols = IntArray(ROW_SYMBOLS)
@@ -64,28 +74,36 @@ internal object OcrMessageCodec {
                 if (count == ROW_SYMBOLS) break
             }
             if (count != ROW_SYMBOLS) return@mapIndexedNotNull null
-            try {
-                decoder.decode(symbols, PARITY_SYMBOLS)
-            } catch (_: ReedSolomonException) {
-                return@mapIndexedNotNull null
-            }
-            val data = symbols.take(DATA_SYMBOLS).map { ALPHABET[it] }.joinToString("")
-            val rowIndex = readPair(data, 4)
-            val total = readPair(data, 6)
-            if (total !in 1..MAX_ROWS || rowIndex >= total) return@mapIndexedNotNull null
-            Match(Row(data.take(4), rowIndex, total, data.substring(8)), markerMatch.range.first..lastSymbol)
+            val raw = buildString(ROW_SYMBOLS) { symbols.forEach { append(ALPHABET[it]) } }
+            if (!decoded.containsKey(raw)) decoded[raw] = decodeRow(symbols, decoder)
+            val row = decoded[raw] ?: return@mapIndexedNotNull null
+            Match(row, markerMatch.range.first..lastSymbol)
         }
     }
 
-    private fun assemble(rows: List<Row>): String? {
+    private fun decodeRow(symbols: IntArray, decoder: ReedSolomonDecoder): Row? {
+        try {
+            decoder.decode(symbols, PARITY_SYMBOLS)
+        } catch (_: ReedSolomonException) {
+            return null
+        }
+        val data = buildString(DATA_SYMBOLS) {
+            for (index in 0 until DATA_SYMBOLS) append(ALPHABET[symbols[index]])
+        }
+        val index = readPair(data, 4)
+        val total = readPair(data, 6)
+        if (total !in 1..MAX_ROWS || index >= total) return null
+        return Row(data.take(4), index, total, data.substring(8))
+    }
+
+    private fun assemble(rows: List<Row>): ByteArray? {
         val first = rows.firstOrNull() ?: return null
         if (rows.size != first.total) return null
-        val ordered = rows.sortedBy { it.index }
-        if (ordered.indices.any { index ->
-                val row = ordered[index]
+        if (rows.indices.any { index ->
+                val row = rows[index]
                 row.index != index || row.total != first.total || row.id != first.id
             }) return null
-        val bytes = decode32(ordered.joinToString("") { it.data })
+        val bytes = decode32(rows.joinToString("") { it.data })
         if (bytes.size < 2) return null
         val length = ((bytes[0].toInt() and 255) shl 8) or (bytes[1].toInt() and 255)
         if (length !in 44..MAX_PACKET_BYTES || length + 2 > bytes.size) return null
@@ -93,35 +111,44 @@ internal object OcrMessageCodec {
         if (requiredRows != rows.size) return null
         val packet = bytes.copyOfRange(2, length + 2)
         if (messageId(packet) != first.id) return null
-        return "ENC1:" + Base64.getUrlEncoder().withoutPadding().encodeToString(packet)
+        return packet
     }
 
     /** Retains only validated ciphertext fragments and can assemble rows across captures. */
     class Collector {
         private val pending = LinkedHashMap<Pair<String, Int>, MutableMap<Int, Row>>()
+        private val completed = LinkedHashMap<Pair<String, Int>, List<Row>>()
         private val emitted = LinkedHashSet<String>()
 
-        fun accept(text: CharSequence): List<String> = acceptRows(scan(text).map { it.row }).map { it.token }
+        fun accept(text: CharSequence): List<String> = acceptPackets(text).map { it.token }
+
+        fun acceptPackets(text: CharSequence): List<Packet> = acceptRows(scan(text).map { it.row })
 
         fun acceptRows(rows: List<Row>): List<Packet> {
             val complete = ArrayList<Packet>()
             for (row in rows) {
                 val key = row.messageKey
-                val parts = pending.getOrPut(key) { linkedMapOf() }
-                parts[row.index] = row
+                val known = completed[key]
+                if (key !in pending && known?.getOrNull(row.index) == row) continue
+                val parts = pending.getOrPut(key) { known.orEmpty().associateByTo(linkedMapOf()) { it.index } }
+                if (parts.put(row.index, row) == row) continue
                 if (parts.size != row.total) continue
                 val ordered = parts.values.sortedBy { it.index }
-                val token = assemble(ordered) ?: continue
+                val bytes = assemble(ordered) ?: continue
+                val packet = Packet(bytes, ordered)
                 pending.remove(key)
-                if (emitted.add(token)) complete.add(Packet(token, ordered))
+                completed[key] = ordered
+                if (emitted.add(packet.token)) complete.add(packet)
             }
             while (pending.size > 12) pending.remove(pending.keys.first())
+            while (completed.size > 64) completed.remove(completed.keys.first())
             while (emitted.size > 64) emitted.remove(emitted.first())
             return complete
         }
 
         fun clear() {
             pending.clear()
+            completed.clear()
             emitted.clear()
         }
     }
