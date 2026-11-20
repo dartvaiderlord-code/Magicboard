@@ -16,6 +16,7 @@ import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
@@ -65,10 +66,13 @@ class CipherKeyboardService : InputMethodService() {
     private var modeMenuOpen = false
     private var alternatives: PopupWindow? = null
     private var heldDelete: View? = null
+    private var deleteRepeating = false
     private val repeatDelete = object : Runnable {
         override fun run() {
-            if (heldDelete?.isPressed == true && backspace()) handler.postDelayed(this, 65)
-            else stopDeleteRepeat()
+            val key = heldDelete ?: return
+            if (!deleteRepeating) keyFeedback(key)
+            deleteRepeating = true
+            if (backspace()) handler.postDelayed(this, 65)
         }
     }
     private val captureStatus: (OcrPreview.State) -> Unit = { state ->
@@ -473,25 +477,36 @@ class CipherKeyboardService : InputMethodService() {
 
     private fun deleteKey(row: LinearLayout, width: Float = 1f) {
         key(row, "⌫", width, special = true) { backspace() }.apply {
-            setOnLongClickListener {
-                heldDelete = it
-                repeatDelete.run()
-                true
-            }
             setOnTouchListener { pressed, event ->
-                if (heldDelete === pressed &&
-                    (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL ||
-                        (event.actionMasked == MotionEvent.ACTION_MOVE &&
-                            (event.x < 0 || event.y < 0 || event.x >= pressed.width || event.y >= pressed.height)))) {
-                    stopDeleteRepeat()
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        stopDeleteRepeat()
+                        heldDelete = pressed
+                        pressed.isPressed = true
+                        handler.postDelayed(repeatDelete, ViewConfiguration.getLongPressTimeout().toLong())
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        if (heldDelete === pressed &&
+                            (event.x < 0 || event.y < 0 || event.x >= pressed.width || event.y >= pressed.height)) {
+                            stopDeleteRepeat()
+                        }
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        val click = heldDelete === pressed && !deleteRepeating
+                        stopDeleteRepeat()
+                        if (click) pressed.performClick()
+                    }
+                    MotionEvent.ACTION_CANCEL -> stopDeleteRepeat()
                 }
-                false
+                true
             }
         }
     }
 
     private fun stopDeleteRepeat() {
+        heldDelete?.isPressed = false
         heldDelete = null
+        deleteRepeating = false
         handler.removeCallbacks(repeatDelete)
     }
 
