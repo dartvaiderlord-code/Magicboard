@@ -148,7 +148,9 @@ class CipherKeyboardService : InputMethodService() {
             setPadding(Ui.dp(context, 3), Ui.dp(context, 3), Ui.dp(context, 3), Ui.dp(context, 7))
             if (Build.VERSION.SDK_INT >= 30) {
                 setOnApplyWindowInsetsListener { view, insets ->
-                    val navigation = insets.getInsets(WindowInsets.Type.navigationBars())
+                    // The IME decor can consume the navigation insets before they reach this view.
+                    val bars = WindowInsets.Type.navigationBars() or WindowInsets.Type.captionBar()
+                    val navigation = (view.rootWindowInsets ?: insets).getInsetsIgnoringVisibility(bars)
                     view.setPadding(
                         Ui.dp(context, 3) + navigation.left,
                         Ui.dp(context, 3),
